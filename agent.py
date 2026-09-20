@@ -43,8 +43,12 @@ LIB_CANDIDATES = [
     "eps2003csp11.dll",
     "viettel-ca_v6.dll",
     "vnpt-ca_csp11.dll",
+    "vnptca_p11_v8.dll",
     "SignatureP11.dll",
+    "ngp11v211.dll",
 ]
+# Các DLL của Windows có chữ "p11" trong tên nhưng không phải driver token
+SKIP_PREFIXES = ("msvcp", "vcamp", "vcomp")
 
 
 def load_config():
@@ -54,15 +58,56 @@ def load_config():
     return {**DEFAULT_CONFIG, **json.loads(path.read_text(encoding="utf-8"))}
 
 
+def _exports_pkcs11(path):
+    """DLL có hàm C_GetFunctionList (dấu hiệu của driver PKCS#11) không? Chỉ dùng trên Windows."""
+    if os.name != "nt":
+        return True
+    try:
+        import ctypes
+
+        return hasattr(ctypes.WinDLL(path), "C_GetFunctionList")
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def find_libs():
+    """Mọi DLL PKCS#11 tìm thấy trong thư mục hệ thống (tên quen thuộc trước, rồi tự dò thêm)."""
+    root = os.environ.get("SystemRoot", "C:\\Windows")
+    found, seen = [], set()
+
+    def add(path):
+        key = str(path).lower()
+        if key not in seen:
+            seen.add(key)
+            found.append(str(path))
+
+    for folder in (Path(root) / "System32", Path(root) / "SysWOW64"):
+        if not folder.is_dir():
+            continue
+        for name in LIB_CANDIDATES:
+            if (folder / name).exists():
+                add(folder / name)
+        for pattern in ("*pkcs11*.dll", "*p11*.dll", "*csp11*.dll"):
+            for path in sorted(folder.glob(pattern)):
+                low = path.name.lower()
+                if low.startswith(SKIP_PREFIXES) or low.endswith("_s.dll"):
+                    continue
+                if str(path).lower() not in seen and _exports_pkcs11(str(path)):
+                    add(path)
+    return found
+
+
 def resolve_lib(value):
     if value and str(value).lower() != "auto":
         return value
-    root = os.environ.get("SystemRoot", "C:\\Windows")
-    for folder in (Path(root) / "System32", Path(root) / "SysWOW64"):
-        for name in LIB_CANDIDATES:
-            if (folder / name).exists():
-                return str(folder / name)
-    return ""
+    libs = find_libs()
+    return libs[0] if libs else ""
+
+
+def candidate_paths():
+    """Danh sách DLL sẽ thử: đúng file trong config.json, hoặc mọi DLL dò được khi để auto."""
+    value = str(CONFIG.get("pkcs11_lib", "auto") or "auto")
+    return [value] if value.lower() != "auto" else find_libs()
 
 
 CONFIG = load_config()
@@ -126,29 +171,90 @@ def add_cors(resp):
 
 
 # ---------------------------------------------------------------- PKCS#11
-_lib = None
+LAST_PROBE = []  # kết quả lần dò gần nhất, hiện trong "Kiểm tra kết nối token"
+
+
+def _err_text(e):
+    return f"{type(e).__name__}: {e}".rstrip(": ")
+
+
+def enumerate_tokens(lib):
+    """Liệt kê mọi token driver báo. Trả về (danh sách (slot, token), ghi chú, số khe đọc).
+    Không nuốt lỗi: khe đọc nào không lấy được token sẽ có một dòng ghi lý do."""
+    try:
+        slots = lib.get_slots(token_present=False)
+    except Exception as e:  # noqa: BLE001
+        raise AgentError(f"Driver không trả về được danh sách khe đọc (slot): {_err_text(e)}", 500)
+    tokens, notes = [], []
+    for i, slot in enumerate(slots, 1):
+        try:
+            desc = (slot.slot_description or "").strip() or f"slot {slot.slot_id}"
+        except Exception:  # noqa: BLE001
+            desc = f"slot {i}"
+        try:
+            token = slot.get_token()
+        except Exception as e:  # noqa: BLE001
+            kind = type(e).__name__
+            if kind == "TokenNotPresent":
+                notes.append(f"   - {desc}: trống (chưa có token)")
+            elif kind == "TokenNotRecognised":
+                notes.append(f"   - {desc}: có thiết bị nhưng driver KHÔNG nhận ra loại token này")
+            else:
+                notes.append(f"   - {desc}: lỗi khi đọc token ({_err_text(e)})")
+            continue
+        tokens.append((slot, token))
+        notes.append(f"   - {desc}: có token '{(token.label or '').strip()}'")
+    return tokens, notes, len(slots)
 
 
 def get_lib():
-    global _lib
-    if _lib is None:
-        if not LIB_PATH or not Path(LIB_PATH).exists():
-            raise AgentError(
-                f"Không tìm thấy thư viện PKCS#11 '{LIB_PATH}'. "
-                "Cài phần mềm của hãng token, rồi điền đường dẫn file .dll vào 'pkcs11_lib' trong config.json.",
-                500,
-            )
-        import pkcs11
+    """Nạp driver. Để 'auto' thì thử lần lượt mọi DLL tìm thấy và chọn DLL đang thấy token."""
+    global LIB_PATH
+    import pkcs11
 
+    paths = candidate_paths()
+    del LAST_PROBE[:]
+    if not paths:
+        raise AgentError(
+            "Không tìm thấy thư viện PKCS#11 nào. "
+            "Cài phần mềm của hãng token, rồi điền đường dẫn file .dll vào 'pkcs11_lib' trong config.json.",
+            500,
+        )
+    fallback, problems = None, []
+    for path in paths:
+        name = Path(path).name
+        if not Path(path).exists():
+            problems.append(f"Không có file: {path}")
+            LAST_PROBE.append(f"{name}: không có file")
+            continue
         try:
-            _lib = pkcs11.lib(LIB_PATH)
+            lib = pkcs11.lib(path)
         except Exception as e:  # noqa: BLE001
-            raise AgentError(
-                f"Không nạp được thư viện '{LIB_PATH}': {e}. "
-                "Nếu DLL của token là bản 32-bit, hãy dùng agent bản 32-bit (x86).",
-                500,
+            problems.append(
+                f"Không nạp được '{path}': {_err_text(e)}. "
+                "Nếu DLL của token là bản 32-bit, hãy dùng agent bản 32-bit (x86)."
             )
-    return _lib
+            LAST_PROBE.append(f"{name}: không nạp được ({_err_text(e)})")
+            continue
+        try:
+            tokens, notes, count = enumerate_tokens(lib)
+            if not tokens:  # có thể token được cắm sau khi agent chạy: khởi tạo lại driver rồi dò lần nữa
+                lib.reinitialize()
+                tokens, notes, count = enumerate_tokens(lib)
+        except Exception as e:  # noqa: BLE001
+            LAST_PROBE.append(f"{name}: lỗi khi dò token ({_err_text(e)})")
+            fallback = fallback or (path, lib)
+            continue
+        LAST_PROBE.append(f"{name}: {count} khe đọc, {len(tokens)} token")
+        LAST_PROBE.extend(notes)
+        if tokens:
+            LIB_PATH = path
+            return lib
+        fallback = fallback or (path, lib)
+    if fallback:
+        LIB_PATH = fallback[0]
+        return fallback[1]
+    raise AgentError(" ".join(problems), 500)
 
 
 def _name(rdn, key):
@@ -163,18 +269,11 @@ def list_certs():
     from pkcs11 import Attribute, ObjectClass
 
     lib = get_lib()
-    try:
-        slots = lib.get_slots(token_present=True)
-    except Exception as e:  # noqa: BLE001
-        raise AgentError(f"Không đọc được danh sách token: {e}", 500)
+    tokens, _notes, _count = enumerate_tokens(lib)
 
     now = datetime.now(timezone.utc)
-    certs = []
-    for slot in slots:
-        try:
-            token = slot.get_token()
-        except Exception:  # noqa: BLE001 - slot không có token
-            continue
+    certs, errors = [], []
+    for slot, token in tokens:
         try:
             with token.open() as session:  # phiên công khai, không cần PIN
                 for obj in session.get_objects({Attribute.CLASS: ObjectClass.CERTIFICATE}):
@@ -198,6 +297,7 @@ def list_certs():
                             "id": cid,
                             "label": label,
                             "token": (token.label or "").strip(),
+                            "slot": slot.slot_id,
                             "cn": _name(cert.subject, "common_name") or cert.subject.human_friendly,
                             "issuer": _name(cert.issuer, "common_name"),
                             "not_after": not_after.isoformat(),
@@ -205,7 +305,10 @@ def list_certs():
                         }
                     )
         except Exception as e:  # noqa: BLE001
-            raise AgentError(f"Không mở được token: {e}", 500)
+            # một khe đọc lỗi không được làm hỏng các token khác; chỉ báo lỗi nếu không đọc được token nào
+            errors.append(f"'{(token.label or '').strip() or 'không nhãn'}': {_err_text(e)}")
+    if not certs and errors:
+        raise AgentError("Không mở được token: " + "; ".join(errors), 500)
     return certs
 
 
@@ -269,7 +372,7 @@ def api_sign():
     from pyhanko.pdf_utils.incremental_writer import IncrementalPdfFileWriter
     from pyhanko.sign import fields, signers
     from pyhanko.sign.fields import SigSeedSubFilter
-    from pyhanko.sign.pkcs11 import PKCS11Signer, open_pkcs11_session
+    from pyhanko.sign.pkcs11 import PKCS11Signer
 
     upload = request.files.get("pdf")
     pin = request.form.get("pin", "")
@@ -302,7 +405,14 @@ def api_sign():
         lines.append(f"Nơi ký: {location}")
 
     try:
-        session = open_pkcs11_session(LIB_PATH, token_label=cert["token"], user_pin=pin)
+        # Mở phiên đúng trên token đã chọn (không dùng open_pkcs11_session vì tham số của nó đổi giữa các bản pyHanko)
+        tokens, _notes, _count = enumerate_tokens(get_lib())
+        token = next((t for s, t in tokens if s.slot_id == cert["slot"]), None)
+        if token is None:
+            raise AgentError("Token vừa bị rút ra. Cắm lại token rồi bấm Làm mới.", 404)
+        session = token.open(user_pin=pin)
+    except AgentError:
+        raise
     except PinIncorrect:
         raise AgentError("Sai PIN. Nhập sai nhiều lần liên tiếp token sẽ bị khóa, hãy kiểm tra kỹ.", 401)
     except PinLocked:
@@ -359,11 +469,14 @@ def dll_bits(path):
     """Đọc header PE để biết DLL là 32 hay 64-bit."""
     import struct
 
-    with open(path, "rb") as f:
-        head = f.read(4096)
-    pe = struct.unpack_from("<I", head, 0x3C)[0]
-    machine = struct.unpack_from("<H", head, pe + 4)[0]
-    return {0x14C: 32, 0x8664: 64}.get(machine)
+    try:
+        with open(path, "rb") as f:
+            head = f.read(4096)
+        pe = struct.unpack_from("<I", head, 0x3C)[0]
+        machine = struct.unpack_from("<H", head, pe + 4)[0]
+        return {0x14C: 32, 0x8664: 64}.get(machine)
+    except Exception:  # noqa: BLE001 - không đọc được header thì coi như không xác định
+        return None
 
 
 @app.get("/api/diagnose")
@@ -392,44 +505,48 @@ def api_diagnose():
         return "đủ"
 
     def dll_file():
-        if not LIB_PATH:
+        paths = candidate_paths()
+        if not paths:
             raise AgentError(
                 "Chưa tìm thấy DLL của token trong thư mục hệ thống. Cài phần mềm của hãng token, "
                 "rồi điền đường dẫn file .dll vào 'pkcs11_lib' trong config.json."
             )
-        if not Path(LIB_PATH).exists():
-            raise AgentError(f"Không có file: {LIB_PATH}")
-        return LIB_PATH
+        missing = [p for p in paths if not Path(p).exists()]
+        if missing:
+            raise AgentError("Không có file: " + ", ".join(missing))
+        return "\n".join(paths)
 
     def bitness():
-        b = dll_bits(LIB_PATH)
-        if b is None:
-            return "không xác định"
-        if b != py_bits:
+        lines, sizes = [], set()
+        for path in candidate_paths():
+            b = dll_bits(path)
+            sizes.add(b)
+            lines.append(f"{Path(path).name}: {b or '?'}-bit")
+        if sizes and py_bits not in sizes and None not in sizes:
+            need = sorted(sizes)[0]
             raise AgentError(
-                f"DLL là bản {b}-bit nhưng agent đang chạy bản {py_bits}-bit. Hãy dùng agent {b}-bit "
-                f"({'x86' if b == 32 else 'x64'})."
+                f"Agent đang chạy bản {py_bits}-bit nhưng DLL là bản {need}-bit ({'; '.join(lines)}). "
+                f"Hãy dùng agent {need}-bit ({'x86' if need == 32 else 'x64'})."
             )
-        return f"DLL và agent cùng {b}-bit"
+        return f"agent {py_bits}-bit. " + "; ".join(lines)
 
     def load():
         get_lib()
-        return "nạp được"
+        return f"nạp được, đang dùng: {LIB_PATH}"
 
     def tokens():
         lib = get_lib()
-        found = []
-        for slot in lib.get_slots(token_present=True):
-            try:
-                found.append((slot.get_token().label or "").strip() or "(không nhãn)")
-            except Exception:  # noqa: BLE001
-                pass
+        found, _notes, _count = enumerate_tokens(lib)
+        report = "\n".join(LAST_PROBE)
         if not found:
             raise AgentError(
-                "Không thấy token nào. Cắm token, thử cổng USB khác, mở lại phần mềm của hãng để chắc chắn token được nhận, "
-                "rồi khởi động lại agent."
+                "Không thấy token nào. Kết quả dò từng DLL:\n" + report + "\n"
+                "Cách xử lý: cắm token trước, chờ đèn sáng; thử cổng USB khác; đóng phần mềm khác đang dùng token; "
+                "mở phần mềm của hãng token để chắc chắn nó nhận token; rồi bấm Làm mới. "
+                "Nếu DLL báo 0 khe đọc, DLL này có thể không phải driver của token đang cắm."
             )
-        return "thấy: " + ", ".join(found)
+        labels = ", ".join((t.label or "").strip() or "(không nhãn)" for _s, t in found)
+        return "thấy: " + labels
 
     def certs():
         found = list_certs()
