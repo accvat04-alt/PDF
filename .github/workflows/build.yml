@@ -1,0 +1,37 @@
+name: Build exe
+on:
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x64, x86]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          architecture: ${{ matrix.arch }}
+      - run: python -m pip install -r requirements.txt pyinstaller
+      - name: Build
+        run: >
+          python -m PyInstaller --noconfirm --onedir --noupx --name KySoPDF
+          --add-data "index.html;."
+          --collect-all pyhanko --collect-all pyhanko_certvalidator --collect-all pkcs11
+          --hidden-import uharfbuzz --hidden-import fontTools
+          agent.py
+      - name: Smoke test
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath "dist\KySoPDF\KySoPDF.exe" -ArgumentList "--no-browser" -PassThru
+          Start-Sleep -Seconds 15
+          (Invoke-WebRequest -UseBasicParsing http://127.0.0.1:8765/).StatusCode
+          (Invoke-WebRequest -UseBasicParsing http://127.0.0.1:8765/api/status).Content
+          (Invoke-WebRequest -UseBasicParsing http://127.0.0.1:8765/api/diagnose).Content
+          Stop-Process -Id $p.Id -Force
+      - uses: actions/upload-artifact@v4
+        with:
+          name: KySoPDF-${{ matrix.arch }}
+          path: dist/KySoPDF
