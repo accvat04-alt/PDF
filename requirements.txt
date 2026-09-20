@@ -1,4 +1,4 @@
 flask>=3.0
-pyhanko[pkcs11,opentype]>=0.25
+pyhanko[pkcs11,opentype]==0.37.0
 python-pkcs11>=0.7
 asn1crypto>=1.5

@@ -56,6 +56,10 @@ Rồi mở `http://127.0.0.1:8765` (không mở file `index.html` trực tiếp)
 | `use_raw_mechanism` | Đặt `true` nếu token báo lỗi mechanism |
 | `allowed_origins`, `open_url` | Chỉ dùng khi đặt giao diện trên máy chủ web riêng |
 | `port` | Cổng của agent |
+| `stamp_layout` | `"two_column"` (mặc định): tên công ty chữ lớn bên trái, chi tiết bên phải. `"simple"`: chỉ các dòng chi tiết. Khung vẽ quá hẹp/dọc thì tự chuyển sang kiểu đơn giản |
+| `stamp_labels` | `"vi"` (mặc định): *Ký bởi / Lý do / Nơi ký / Ngày ký*. `"en"`: *Digitally signed by / Reason / Location / Date* |
+| `stamp_show_dn` | `true` (mặc định) hiện dòng DN lấy từ chứng thư số; `false` để ẩn. Khung quá chật thì dòng DN tự bị bỏ trước |
+| `stamp_border` | `true` để vẽ viền quanh chữ ký (mặc định không viền) |
 
 Nút **Kiểm tra kết nối token** trên giao diện cho biết lỗi nằm ở bước nào.
 
@@ -63,4 +67,5 @@ Nút **Kiểm tra kết nối token** trên giao diện cho biết lỗi nằm �
 - Chưa thử với token thật trên Windows trong lúc viết.
 - Nhập sai PIN nhiều lần sẽ khóa token.
 - Chưa hỗ trợ chữ ký dạng hình ảnh và PDF đặt mật khẩu.
+- Trang PDF có thuộc tính xoay (hay gặp ở file scan) vẫn được xử lý: chữ ký luôn hiển thị thẳng đứng.
 - Tính pháp lý phụ thuộc chứng thư số của CA được cấp phép và thỏa thuận giữa các bên.
