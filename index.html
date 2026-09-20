@@ -1,0 +1,436 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ký hợp đồng PDF</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --desk: #dde2e8;
+    --panel: #f7f8fa;
+    --ink: #17233a;
+    --muted: #586377;
+    --line: #c8cfd9;
+    --seal: #b42318;
+    --seal-soft: rgba(180, 35, 24, 0.09);
+    --ok: #17724f;
+    --focus: #2f6fde;
+    --radius: 6px;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    font-family: "Be Vietnam Pro", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    font-size: 14px;
+    line-height: 1.5;
+    color: var(--ink);
+    background: var(--desk);
+    display: grid;
+    grid-template-rows: auto 1fr;
+  }
+  :focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+
+  header {
+    display: flex; align-items: center; justify-content: space-between; gap: 16px;
+    padding: 10px 20px; background: var(--ink); color: #fff;
+  }
+  header h1 { margin: 0; font-size: 16px; font-weight: 600; letter-spacing: 0.01em; }
+  .agent { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; color: #d5dbe6; }
+  .agent i { width: 9px; height: 9px; border-radius: 50%; background: #e0574b; }
+  .agent.on i { background: #4cc38a; }
+
+  main { display: grid; grid-template-columns: minmax(0, 1fr) 348px; min-height: 0; }
+
+  /* ---- vùng xem PDF ---- */
+  #viewer { overflow: auto; padding: 24px; position: relative; }
+  #viewer.drag::after {
+    content: "Thả file PDF để mở"; position: absolute; inset: 12px;
+    display: grid; place-items: center; font-weight: 600; font-size: 18px; pointer-events: none;
+    background: rgba(221, 226, 232, 0.92); border: 2px dashed var(--ink); border-radius: var(--radius);
+  }
+  #pages { display: flex; flex-direction: column; align-items: center; gap: 20px; }
+  .page {
+    position: relative; background: #fff; flex: none;
+    box-shadow: 0 1px 2px rgba(23, 35, 58, .2), 0 10px 28px rgba(23, 35, 58, .14);
+  }
+  .page canvas { display: block; }
+  .overlay { position: absolute; inset: 0; cursor: crosshair; touch-action: none; }
+  .sigbox {
+    position: absolute; pointer-events: none;
+    border: 1.5px solid var(--seal); background: var(--seal-soft); color: var(--seal);
+    display: grid; place-items: center; font-size: 12px; font-weight: 600; text-align: center;
+  }
+  .sigbox.drawing { border-style: dashed; }
+
+  .empty {
+    max-width: 420px; margin: 12vh auto 0; text-align: center; color: var(--muted);
+  }
+  .empty h2 { margin: 0 0 8px; font-size: 20px; color: var(--ink); font-weight: 600; }
+  .empty p { margin: 0 0 20px; }
+
+  /* ---- bảng điều khiển ---- */
+  aside { background: var(--panel); border-left: 1px solid var(--line); overflow: auto; padding: 20px; }
+  ol.steps { list-style: none; margin: 0; padding: 0; counter-reset: step; display: grid; gap: 22px; }
+  ol.steps > li { counter-increment: step; position: relative; padding-left: 34px; }
+  ol.steps > li::before {
+    content: counter(step); position: absolute; left: 0; top: 0;
+    width: 22px; height: 22px; border-radius: 50%; border: 1.5px solid var(--ink);
+    display: grid; place-items: center; font-size: 12px; font-weight: 600;
+  }
+  ol.steps h3 { margin: 0 0 6px; font-size: 14px; font-weight: 600; line-height: 22px; }
+  .hint { margin: 6px 0 0; color: var(--muted); font-size: 12.5px; }
+  .hint.err { color: var(--seal); }
+  .row { display: flex; gap: 8px; }
+  .row > * { min-width: 0; }
+
+  button, select, input {
+    font: inherit; color: inherit; border-radius: var(--radius); border: 1px solid var(--line);
+    background: #fff; padding: 8px 10px; width: 100%;
+  }
+  button { cursor: pointer; font-weight: 500; width: auto; }
+  button:hover:not(:disabled) { border-color: var(--ink); }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  button.primary { background: var(--ink); color: #fff; border-color: var(--ink); width: 100%; padding: 11px 14px; font-weight: 600; }
+  button.link { border: 0; background: none; padding: 0; color: var(--seal); text-decoration: underline; font-size: 12.5px; }
+  input + input, select + input { margin-top: 8px; }
+  .fields { display: grid; gap: 8px; }
+
+  .status { margin: 0 0 18px; padding: 10px 12px; border-radius: var(--radius); font-size: 13px; background: #e9edf3; }
+  .status.err { background: #fbe9e7; color: #8f1d14; }
+  .status.ok { background: #e3f3ec; color: var(--ok); }
+  .status button { margin-top: 8px; }
+  .diag { list-style: none; padding: 0; margin: 8px 0 0; display: grid; gap: 6px; font-size: 12.5px; }
+  .diag .good b { color: var(--ok); }
+  .diag .bad b { color: var(--seal); }
+  .diag span { color: var(--muted); display: block; }
+  [hidden] { display: none !important; }
+
+  @media (max-width: 860px) {
+    main { grid-template-columns: 1fr; grid-template-rows: minmax(0, 1fr) auto; }
+    aside { border-left: 0; border-top: 1px solid var(--line); max-height: 52vh; }
+    #viewer { padding: 12px; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>Ký hợp đồng PDF</h1>
+  <span class="agent" id="agentPill"><i></i><span id="agentText">Đang kiểm tra agent…</span></span>
+</header>
+
+<main>
+  <section id="viewer" aria-label="Xem hợp đồng">
+    <div class="empty" id="empty">
+      <h2>Mở hợp đồng cần ký</h2>
+      <p>Kéo thả file PDF vào đây hoặc chọn từ máy. File không rời khỏi máy của bạn.</p>
+      <button class="primary" id="openEmpty" style="width:auto">Mở file PDF</button>
+    </div>
+    <div id="pages"></div>
+  </section>
+
+  <aside>
+    <div class="status" id="status" role="status" aria-live="polite" hidden></div>
+    <ol class="steps">
+      <li>
+        <h3>File hợp đồng</h3>
+        <div class="row">
+          <button id="openBtn">Mở file PDF</button>
+        </div>
+        <p class="hint" id="fileInfo">Chưa mở file nào.</p>
+      </li>
+      <li>
+        <h3>Vị trí chữ ký</h3>
+        <p class="hint" style="margin-top:0">Bấm hoặc kéo chuột trên trang để đặt khung chữ ký.</p>
+        <p class="hint" id="boxInfo">Chưa chọn vị trí.</p>
+        <div class="row" style="margin-top:8px"><button id="quickBox">Đặt ở cuối trang cuối</button><button class="link" id="clearBox" hidden>Xóa khung</button></div>
+      </li>
+      <li>
+        <h3>Chứng thư số</h3>
+        <div class="row">
+          <select id="certs" aria-label="Chứng thư số" disabled></select>
+          <button id="refreshCerts" title="Đọc lại token">Làm mới</button>
+        </div>
+        <p class="hint" id="certHint"></p>
+        <button class="link" id="diagBtn" style="color:var(--ink)">Kiểm tra kết nối token</button>
+        <ul class="diag" id="diag" hidden></ul>
+        <div class="fields" style="margin-top:8px">
+          <input id="pin" type="password" inputmode="numeric" autocomplete="off" placeholder="Mã PIN của token" aria-label="Mã PIN của token">
+        </div>
+        <p class="hint">PIN chỉ gửi tới agent trên máy này và không được lưu.</p>
+      </li>
+      <li>
+        <h3>Thông tin ký</h3>
+        <div class="fields">
+          <input id="reason" type="text" placeholder="Lý do (ví dụ: Tôi đồng ý nội dung hợp đồng)" aria-label="Lý do ký">
+          <input id="location" type="text" placeholder="Nơi ký (không bắt buộc)" aria-label="Nơi ký">
+        </div>
+      </li>
+    </ol>
+
+    <div style="margin-top:24px">
+      <button class="primary" id="signBtn" disabled>Ký hợp đồng</button>
+    </div>
+  </aside>
+</main>
+
+<input type="file" id="file" accept="application/pdf,.pdf" hidden>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script>
+(() => {
+  'use strict';
+  const $ = (s) => document.querySelector(s);
+  const AGENT = ['127.0.0.1', 'localhost'].includes(location.hostname) ? '' : 'http://127.0.0.1:8765';
+  pdfjsLib.GlobalWorkerOptions.workerSrc =
+    'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+  const S = { bytes: null, name: '', pages: [], box: null, certs: [], certErr: '', agent: false, busy: false, signed: null };
+  const el = {
+    viewer: $('#viewer'), pages: $('#pages'), empty: $('#empty'), file: $('#file'),
+    fileInfo: $('#fileInfo'), boxInfo: $('#boxInfo'), clearBox: $('#clearBox'),
+    certs: $('#certs'), certHint: $('#certHint'), pin: $('#pin'), reason: $('#reason'), location: $('#location'),
+    sign: $('#signBtn'), status: $('#status'), pill: $('#agentPill'), pillText: $('#agentText'),
+  };
+
+  function say(msg, kind = '', action) {
+    el.status.className = 'status ' + kind;
+    el.status.textContent = msg;
+    if (action) {
+      const b = document.createElement('button');
+      b.textContent = action.label; b.addEventListener('click', action.run);
+      el.status.append(document.createElement('br'), b);
+    }
+    el.status.hidden = !msg;
+  }
+
+  /* ------------------------------------------------ mở & hiển thị PDF */
+  async function loadPdf(bytes, name) {
+    const doc = await pdfjsLib.getDocument({ data: bytes.slice(0) }).promise;
+    S.bytes = bytes; S.name = name; S.box = null; S.pages = [];
+    el.pages.innerHTML = ''; el.empty.hidden = true;
+    const avail = Math.max(300, el.viewer.clientWidth - 48);
+    const io = new IntersectionObserver((entries) => {
+      entries.forEach((e) => { if (e.isIntersecting) renderPage(S.pages[Number(e.target.dataset.i)]); });
+    }, { root: el.viewer, rootMargin: '700px 0px' });
+
+    for (let n = 1; n <= doc.numPages; n++) {
+      const page = await doc.getPage(n);
+      const scale = Math.min(1.5, avail / page.getViewport({ scale: 1 }).width);
+      const vp = page.getViewport({ scale });
+      const wrap = document.createElement('div');
+      wrap.className = 'page'; wrap.dataset.i = n - 1;
+      wrap.style.width = vp.width + 'px'; wrap.style.height = vp.height + 'px';
+      const canvas = document.createElement('canvas');
+      const overlay = document.createElement('div');
+      overlay.className = 'overlay';
+      wrap.append(canvas, overlay); el.pages.append(wrap);
+      const p = { n, page, vp, scale, wrap, canvas, overlay, rendered: false };
+      S.pages.push(p); attachDrawing(p); io.observe(wrap);
+    }
+    el.viewer.scrollTop = 0;
+    el.fileInfo.textContent = `${name} · ${doc.numPages} trang`;
+    render();
+  }
+
+  async function renderPage(p) {
+    if (p.rendered) return;
+    p.rendered = true;
+    const dpr = window.devicePixelRatio || 1;
+    p.canvas.width = Math.floor(p.vp.width * dpr); p.canvas.height = Math.floor(p.vp.height * dpr);
+    p.canvas.style.width = p.vp.width + 'px'; p.canvas.style.height = p.vp.height + 'px';
+    await p.page.render({
+      canvasContext: p.canvas.getContext('2d'), viewport: p.vp,
+      transform: dpr !== 1 ? [dpr, 0, 0, dpr, 0, 0] : null,
+    }).promise;
+  }
+
+  /* ------------------------------------------------ vẽ khung chữ ký */
+  const boxEl = document.createElement('div');
+  boxEl.className = 'sigbox'; boxEl.textContent = 'Chữ ký';
+
+  function attachDrawing(p) {
+    let start = null, moved = false;
+    const pos = (e) => {
+      const r = p.overlay.getBoundingClientRect();
+      return { x: Math.min(Math.max(e.clientX - r.left, 0), r.width), y: Math.min(Math.max(e.clientY - r.top, 0), r.height) };
+    };
+    p.overlay.addEventListener('pointerdown', (e) => {
+      p.overlay.setPointerCapture(e.pointerId); start = pos(e); moved = false;
+    });
+    p.overlay.addEventListener('pointermove', (e) => {
+      if (!start) return;
+      const c = pos(e);
+      if (Math.hypot(c.x - start.x, c.y - start.y) > 6) moved = true;
+      if (moved) { showBox(p, rectOf(start, c), true); }
+    });
+    p.overlay.addEventListener('pointerup', (e) => {
+      if (!start) return;
+      const c = pos(e); let r;
+      if (moved) r = rectOf(start, c);
+      else {
+        const w = 190, h = 64;
+        r = { x: c.x - w / 2, y: c.y - h / 2, w, h };
+      }
+      start = null;
+      r.w = Math.max(r.w, 60); r.h = Math.max(r.h, 28);
+      r.x = Math.min(Math.max(r.x, 0), p.vp.width - r.w);
+      r.y = Math.min(Math.max(r.y, 0), p.vp.height - r.h);
+      S.box = { p, ...r }; showBox(p, r, false); render();
+    });
+  }
+  const rectOf = (a, b) => ({ x: Math.min(a.x, b.x), y: Math.min(a.y, b.y), w: Math.abs(a.x - b.x), h: Math.abs(a.y - b.y) });
+  function showBox(p, r, drawing) {
+    p.overlay.append(boxEl);
+    Object.assign(boxEl.style, { left: r.x + 'px', top: r.y + 'px', width: r.w + 'px', height: r.h + 'px' });
+    boxEl.classList.toggle('drawing', drawing);
+  }
+  $('#quickBox').addEventListener('click', () => {
+    const p = S.pages[S.pages.length - 1];
+    if (!p) { say('Hãy mở file PDF trước.', 'err'); return; }
+    const w = 190, h = 64, r = { x: p.vp.width - w - 40, y: p.vp.height - h - 60, w, h };
+    S.box = { p, ...r }; showBox(p, r, false); p.wrap.scrollIntoView({ block: 'end' }); render();
+  });
+  $('#clearBox').addEventListener('click', () => { S.box = null; boxEl.remove(); render(); });
+
+  async function readJson(r) {
+    const t = await r.text();
+    try { return JSON.parse(t); }
+    catch { return { error: `Agent trả về lỗi không đọc được (HTTP ${r.status}). Xem chi tiết ở cửa sổ agent.` }; }
+  }
+
+  /* ------------------------------------------------ agent & chứng thư */
+  function setAgentUI(on) {
+    el.pill.classList.toggle('on', on);
+    el.pillText.textContent = on ? 'Agent đã kết nối' : 'Chưa kết nối agent';
+  }
+  async function pollAgent() {
+    try {
+      const r = await fetch(AGENT + '/api/status', { cache: 'no-store' });
+      if (!r.ok) throw new Error();
+      if (!S.agent) { S.agent = true; setAgentUI(true); loadCerts(); }
+    } catch {
+      if (S.agent || el.pillText.textContent.startsWith('Đang')) { S.agent = false; setAgentUI(false); render(); }
+    }
+  }
+  async function loadCerts() {
+    S.certErr = ''; el.certHint.textContent = 'Đang đọc token…'; el.certHint.className = 'hint';
+    try {
+      const r = await fetch(AGENT + '/api/certs', { cache: 'no-store' });
+      const j = await readJson(r);
+      if (!r.ok) throw new Error(j.error || 'Không đọc được token.');
+      S.certs = j.certs;
+    } catch (e) { S.certs = []; S.certErr = e.message; }
+    el.certs.innerHTML = '';
+    S.certs.forEach((c, i) => {
+      const o = document.createElement('option');
+      const d = new Date(c.not_after).toLocaleDateString('vi-VN');
+      o.value = i; o.textContent = `${c.cn} (${c.expired ? 'đã hết hạn' : 'hết hạn ' + d})`; o.disabled = c.expired;
+      el.certs.append(o);
+    });
+    const firstOk = S.certs.findIndex((c) => !c.expired);
+    if (firstOk >= 0) el.certs.value = firstOk;
+    render();
+  }
+  $('#refreshCerts').addEventListener('click', () => { if (S.agent) loadCerts(); else say('Agent chưa chạy. Mở cửa sổ lệnh và chạy: python agent.py', 'err'); });
+
+  $('#diagBtn').addEventListener('click', async () => {
+    const ul = $('#diag'); ul.hidden = false; ul.innerHTML = '';
+    const add = (ok, name, detail) => {
+      const li = document.createElement('li'); li.className = ok ? 'good' : 'bad';
+      const b = document.createElement('b'); b.textContent = (ok ? 'Đạt: ' : 'Lỗi: ') + name;
+      const d = document.createElement('span'); d.textContent = detail;
+      li.append(b, d); ul.append(li);
+    };
+    try {
+      const r = await fetch(AGENT + '/api/diagnose', { cache: 'no-store' });
+      const j = await readJson(r);
+      if (!r.ok) throw new Error(j.error);
+      j.steps.forEach((s) => add(s.ok, s.name, s.detail));
+      if (j.steps.every((s) => s.ok)) loadCerts();
+    } catch (e) {
+      add(false, 'Kết nối agent', location.protocol === 'file:'
+        ? 'Đang mở trực tiếp file index.html. Chạy agent rồi mở http://127.0.0.1:8765.'
+        : 'Không gọi được agent. Kiểm tra cửa sổ agent còn mở không, và địa chỉ trang là http://127.0.0.1:8765.');
+    }
+  });
+
+  /* ------------------------------------------------ ký */
+  async function sign() {
+    const b = S.box, cert = S.certs[Number(el.certs.value)];
+    const a = b.p.vp.convertToPdfPoint(b.x, b.y), c = b.p.vp.convertToPdfPoint(b.x + b.w, b.y + b.h);
+    const box = [Math.min(a[0], c[0]), Math.min(a[1], c[1]), Math.max(a[0], c[0]), Math.max(a[1], c[1])].map((n) => n.toFixed(2)).join(',');
+    const fd = new FormData();
+    fd.append('pdf', new Blob([S.bytes], { type: 'application/pdf' }), S.name);
+    fd.append('page', b.p.n); fd.append('box', box);
+    fd.append('cert_id', cert.id); fd.append('cert_label', cert.label);
+    fd.append('pin', el.pin.value);
+    fd.append('reason', el.reason.value); fd.append('location', el.location.value);
+
+    S.busy = true; render(); say('Đang ký, vui lòng không rút token…');
+    try {
+      const r = await fetch(AGENT + '/api/sign', { method: 'POST', body: fd });
+      if (!r.ok) { const j = await readJson(r); throw new Error(j.error || 'Ký thất bại.'); }
+      const buf = new Uint8Array(await r.arrayBuffer());
+      const name = /_signed\.pdf$/i.test(S.name) ? S.name : S.name.replace(/\.pdf$/i, '') + '_signed.pdf';
+      S.signed = { buf, name };
+      await loadPdf(buf, name);
+      say('Đã ký xong. Bạn có thể ký thêm hoặc tải file về.', 'ok', { label: 'Tải file đã ký', run: download });
+    } catch (e) {
+      say(e.message, 'err');
+    } finally {
+      el.pin.value = ''; S.busy = false; render();
+    }
+  }
+  function download() {
+    if (!S.signed) return;
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([S.signed.buf], { type: 'application/pdf' }));
+    a.download = S.signed.name; a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+  }
+  el.sign.addEventListener('click', sign);
+
+  /* ------------------------------------------------ trạng thái giao diện */
+  function render() {
+    const b = S.box;
+    el.boxInfo.textContent = b ? `Trang ${b.p.n} · ${Math.round(b.w / b.p.scale)}×${Math.round(b.h / b.p.scale)} pt` : 'Chưa chọn vị trí.';
+    el.clearBox.hidden = !b;
+    const cert = S.certs[Number(el.certs.value)];
+    el.certs.disabled = !S.certs.length;
+    el.certHint.className = 'hint';
+    if (!S.agent) {
+      el.certHint.textContent = location.protocol === 'file:'
+        ? 'Bạn đang mở trực tiếp file index.html. Hãy chạy agent rồi mở http://127.0.0.1:8765 trong trình duyệt.'
+        : 'Chưa kết nối agent. Hãy chạy agent (python agent.py hoặc KySoPDF.exe) và giữ cửa sổ đó mở.';
+      el.certHint.className = 'hint err';
+    }
+    else if (S.certErr) { el.certHint.textContent = S.certErr; el.certHint.className = 'hint err'; }
+    else if (!S.certs.length) { el.certHint.textContent = 'Không thấy chứng thư. Cắm USB token rồi bấm Làm mới.'; }
+    else { el.certHint.textContent = ''; }
+    el.sign.disabled = !(S.agent && S.bytes && b && cert && !cert.expired && el.pin.value && !S.busy);
+  }
+  ['input', 'change'].forEach((t) => { el.pin.addEventListener(t, render); el.certs.addEventListener(t, render); });
+
+  /* ------------------------------------------------ chọn / thả file */
+  async function openFile(f) {
+    if (!f) return;
+    if (!/\.pdf$/i.test(f.name) && f.type !== 'application/pdf') { say('Chỉ mở được file PDF.', 'err'); return; }
+    try { say(''); await loadPdf(new Uint8Array(await f.arrayBuffer()), f.name); S.signed = null; }
+    catch { say('Không mở được file này. File có thể bị hỏng hoặc đặt mật khẩu.', 'err'); }
+  }
+  ['#openBtn', '#openEmpty'].forEach((s) => $(s).addEventListener('click', () => el.file.click()));
+  el.file.addEventListener('change', () => { openFile(el.file.files[0]); el.file.value = ''; });
+  el.viewer.addEventListener('dragover', (e) => { e.preventDefault(); el.viewer.classList.add('drag'); });
+  el.viewer.addEventListener('dragleave', (e) => { if (e.target === el.viewer) el.viewer.classList.remove('drag'); });
+  el.viewer.addEventListener('pointerdown', () => el.viewer.classList.remove('drag'));
+  el.viewer.addEventListener('drop', (e) => { e.preventDefault(); el.viewer.classList.remove('drag'); openFile(e.dataTransfer.files[0]); });
+
+  setInterval(pollAgent, 4000); pollAgent(); render();
+})();
+</script>
+</body>
+</html>
